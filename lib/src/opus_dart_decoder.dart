@@ -1,13 +1,14 @@
 import 'dart:ffi';
 import 'dart:typed_data';
+
 import 'package:ffi/ffi.dart';
-import 'package:meta/meta.dart';
-import '../wrappers/opus_decoder.dart' as opus_decoder;
-import '../wrappers/opus_defines.dart' as opus_defines;
+
+import 'bindings/libopus.dart';
+import 'bindings/opus_bindings.dart' as opus_bindings;
 import 'opus_dart_misc.dart';
 
 int _packetDuration(int samples, int channels, int sampleRate) =>
-    ((1000 * samples) ~/ (channels)) ~/ sampleRate;
+    ((samples * 1000) ~/ channels) ~/ sampleRate;
 
 /// Soft clips the [input] to a range from -1 to 1 and returns
 /// the result.
@@ -18,17 +19,15 @@ int _packetDuration(int samples, int channels, int sampleRate) =>
 /// [input] is copied into native memory.
 /// If you are using a [BufferedOpusDecoder], take a look at it's [pcmSoftClipOutputBuffer]
 /// method instead, since it avoids unnecessary memory copying.
-Float32List pcmSoftClip({@required Float32List input, @required int channels}) {
-  Pointer<Float> nativePcm = allocate<Float>(count: input.length);
+Float32List pcmSoftClip({required Float32List input, required int channels}) {
+  final nativePcm = malloc.allocate<Float>(sizeOf<Float>() * input.length);
   nativePcm.asTypedList(input.length).setAll(0, input);
-  Pointer<Float> nativeBuffer = allocate<Float>(count: channels);
+  final nativeBuffer = malloc.allocate<Float>(sizeOf<Float>() * channels);
   try {
-    opus_decoder.opus_pcm_soft_clip(
-        nativePcm, input.length ~/ channels, channels, nativeBuffer);
+    libopus.opus_pcm_soft_clip(nativePcm, input.length ~/ channels, channels, nativeBuffer);
     return Float32List.fromList(nativePcm.asTypedList(input.length));
   } finally {
-    free(nativePcm);
-    free(nativeBuffer);
+    malloc..free(nativePcm)..free(nativeBuffer);
   }
 }
 
@@ -37,46 +36,40 @@ Float32List pcmSoftClip({@required Float32List input, @required int channels}) {
 ///
 /// All method calls in this calls allocate their own memory everytime they are called.
 /// See the [BufferedOpusDecoder] for an implementation with less allocation calls.
-class SimpleOpusDecoder extends OpusDecoder {
-  final Pointer<opus_decoder.OpusDecoder> _opusDecoder;
-  @override
+class SimpleOpusDecoder {
   final int sampleRate;
-  @override
   final int channels;
-  bool _destroyed;
-  @override
-  bool get destroyed => _destroyed;
-  @override
-  int get lastPacketDurationMs => _lastPacketDurationMs;
-  int _lastPacketDurationMs;
+
+  int? _lastPacketDurationMs;
 
   final Pointer<Float> _softClipBuffer;
 
   final int _maxSamplesPerPacket;
+  final Pointer<opus_bindings.OpusDecoder> _opusDecoder;
+  bool _destroyed;
 
-  SimpleOpusDecoder._(
-      this._opusDecoder, this.sampleRate, this.channels, this._softClipBuffer)
+  bool get destroyed => _destroyed;
+  int? get lastPacketDurationMs => _lastPacketDurationMs;
+
+  SimpleOpusDecoder._(this._opusDecoder, this.sampleRate, this.channels, this._softClipBuffer)
       : _destroyed = false,
-        this._maxSamplesPerPacket = maxSamplesPerPacket(sampleRate, channels);
+        _maxSamplesPerPacket = maxSamplesPerPacket(sampleRate, channels);
 
   /// Creates an new [SimpleOpusDecoder] based on the [sampleRate] and [channels].
   /// See the matching fields for more information about these parameters.
-  factory SimpleOpusDecoder(
-      {@required int sampleRate, @required int channels}) {
-    Pointer<Int32> error = allocate<Int32>(count: 1);
-    Pointer<Float> softClipBuffer = allocate<Float>(count: channels);
-    Pointer<opus_decoder.OpusDecoder> decoder =
-        opus_decoder.opus_decoder_create(sampleRate, channels, error);
+  factory SimpleOpusDecoder({required int sampleRate, required int channels}) {
+    final error = malloc.allocate<Int32>(sizeOf<Int32>() * 1);
+    final softClipBuffer = malloc.allocate<Float>(sizeOf<Float>() * channels);
+    final decoder = libopus.opus_decoder_create(sampleRate, channels, error);
     try {
-      if (error.value == opus_defines.OPUS_OK) {
-        return SimpleOpusDecoder._(
-            decoder, sampleRate, channels, softClipBuffer);
+      if (error.value == opus_bindings.OPUS_OK) {
+        return SimpleOpusDecoder._(decoder, sampleRate, channels, softClipBuffer);
       } else {
-        free(softClipBuffer);
+        malloc.free(softClipBuffer);
         throw OpusException(error.value);
       }
     } finally {
-      free(error);
+      malloc.free(error);
     }
   }
 
@@ -101,35 +94,31 @@ class SimpleOpusDecoder extends OpusDecoder {
   /// really lost. So for them, you have to report packet loss.
   ///
   /// The input bytes need to represent a whole packet!
-  @override
-  Int16List decode({@required Uint8List input, bool fec = false, int loss}) {
-    Pointer<Int16> outputNative = allocate<Int16>(count: _maxSamplesPerPacket);
+  Int16List decode({required Uint8List input, bool fec = false, int? loss}) {
+    final outputNative = malloc.allocate<Int16>(sizeOf<Int16>() * _maxSamplesPerPacket);
     Pointer<Uint8> inputNative;
-    if (input != null) {
-      inputNative = allocate<Uint8>(count: input.length);
-      inputNative.asTypedList(input.length).setAll(0, input);
-    } else {
-      inputNative = nullptr;
-    }
+    inputNative = malloc.allocate<Uint8>(sizeOf<Uint8>() * input.length);
+    inputNative.asTypedList(input.length).setAll(0, input);
+
     int frameSize;
-    if (input == null || fec) {
-      frameSize = loss ?? lastPacketDurationMs;
-    } else {
-      frameSize = _maxSamplesPerPacket;
-    }
-    int outputSamplesPerChannel = opus_decoder.opus_decode(_opusDecoder, inputNative,
-        input.length, outputNative, frameSize, fec ? 1 : 0);
+    frameSize = (fec ? loss ?? lastPacketDurationMs : _maxSamplesPerPacket)!;
+    final outputSamplesPerChannel = libopus.opus_decode(
+      _opusDecoder,
+      inputNative,
+      input.length,
+      outputNative,
+      frameSize,
+      fec ? 1 : 0,
+    );
     try {
-      if (outputSamplesPerChannel >= opus_defines.OPUS_OK) {
-        _lastPacketDurationMs =
-            _packetDuration(outputSamplesPerChannel, channels, sampleRate);
-        return Int16List.fromList(outputNative.asTypedList(outputSamplesPerChannel*channels));
+      if (outputSamplesPerChannel >= opus_bindings.OPUS_OK) {
+        _lastPacketDurationMs = _packetDuration(outputSamplesPerChannel, channels, sampleRate);
+        return Int16List.fromList(outputNative.asTypedList(outputSamplesPerChannel * channels));
       } else {
         throw OpusException(outputSamplesPerChannel);
       }
     } finally {
-      free(inputNative);
-      free(outputNative);
+      malloc..free(inputNative)..free(outputNative);
     }
   }
 
@@ -142,52 +131,53 @@ class SimpleOpusDecoder extends OpusDecoder {
   /// because they already are in the native buffer.
   ///
   /// Apart from that, this method behaves just as [decode], so see there for more information.
-  @override
-  Float32List decodeFloat(
-      {@required Uint8List input,
-      bool fec = false,
-      bool autoSoftClip = false,
-      int loss}) {
-    Pointer<Float> outputNative = allocate<Float>(count: _maxSamplesPerPacket);
+  Float32List decodeFloat({
+    required Uint8List input,
+    bool fec = false,
+    bool autoSoftClip = false,
+    int? loss,
+  }) {
+    final outputNative = malloc.allocate<Float>(sizeOf<Float>() * _maxSamplesPerPacket);
     Pointer<Uint8> inputNative;
-    if (input != null) {
-      inputNative = allocate<Uint8>(count: input.length);
-      inputNative.asTypedList(input.length).setAll(0, input);
-    } else {
-      inputNative = nullptr;
-    }
+
+    inputNative = malloc.allocate<Uint8>(sizeOf<Uint8>() * input.length);
+    inputNative.asTypedList(input.length).setAll(0, input);
+
     int frameSize;
-    if (input == null || fec) {
-      frameSize = loss ?? lastPacketDurationMs;
-    } else {
-      frameSize = _maxSamplesPerPacket;
-    }
-    int outputSamplesPerChannel = opus_decoder.opus_decode_float(_opusDecoder,
-        inputNative, input.length, outputNative, frameSize, fec ? 1 : 0);
+    frameSize = (fec ? loss ?? lastPacketDurationMs : _maxSamplesPerPacket)!;
+    final outputSamplesPerChannel = libopus.opus_decode_float(
+      _opusDecoder,
+      inputNative,
+      input.length,
+      outputNative,
+      frameSize,
+      fec ? 1 : 0,
+    );
     try {
-      if (outputSamplesPerChannel >= opus_defines.OPUS_OK) {
-        _lastPacketDurationMs =
-            _packetDuration(outputSamplesPerChannel, channels, sampleRate);
+      if (outputSamplesPerChannel >= opus_bindings.OPUS_OK) {
+        _lastPacketDurationMs = _packetDuration(outputSamplesPerChannel, channels, sampleRate);
         if (autoSoftClip) {
-          opus_decoder.opus_pcm_soft_clip(outputNative,
-              outputSamplesPerChannel ~/ channels, channels, _softClipBuffer);
+          libopus.opus_pcm_soft_clip(
+            outputNative,
+            outputSamplesPerChannel ~/ channels,
+            channels,
+            _softClipBuffer,
+          );
         }
-        return Float32List.fromList(outputNative.asTypedList(outputSamplesPerChannel*channels));
+        return Float32List.fromList(outputNative.asTypedList(outputSamplesPerChannel * channels));
       } else {
         throw OpusException(outputSamplesPerChannel);
       }
     } finally {
-      free(inputNative);
-      free(outputNative);
+      malloc..free(inputNative)..free(outputNative);
     }
   }
 
-  @override
   void destroy() {
     if (!_destroyed) {
       _destroyed = true;
-      opus_decoder.opus_decoder_destroy(_opusDecoder);
-      free(_softClipBuffer);
+      libopus.opus_decoder_destroy(_opusDecoder);
+      malloc.free(_softClipBuffer);
     }
   }
 }
@@ -219,17 +209,10 @@ class SimpleOpusDecoder extends OpusDecoder {
 /// }
 /// ```
 class BufferedOpusDecoder extends OpusDecoder {
-  final Pointer<opus_decoder.OpusDecoder> _opusDecoder;
   @override
   final int sampleRate;
   @override
   final int channels;
-  bool _destroyed;
-  @override
-  bool get destroyed => _destroyed;
-  @override
-  int get lastPacketDurationMs => _lastPacketDurationMs;
-  int _lastPacketDurationMs;
 
   /// The size of the allocated the input buffer in bytes.
   /// Should be choosen big enough to hold a maximal opus packet
@@ -239,7 +222,27 @@ class BufferedOpusDecoder extends OpusDecoder {
   /// Indicates, how many bytes of data are currently stored in the [inputBuffer].
   int inputBufferIndex;
 
+  /// The size of the allocated the output buffer. If this value is choosen
+  /// to small, this decoder will not be capable of decoding some packets.
+  ///
+  /// See the constructor for information, how to choose this.
+  final int maxOutputBufferSizeBytes;
+
+  final Pointer<opus_bindings.OpusDecoder> _opusDecoder;
+
+  bool _destroyed;
+  int _lastPacketDurationMs = 0;
+
   final Pointer<Uint8> _inputBuffer;
+
+  int _outputBufferIndex;
+  final Pointer<Uint8> _outputBuffer;
+  final Pointer<Float> _softClipBuffer;
+
+  @override
+  bool get destroyed => _destroyed;
+  @override
+  int get lastPacketDurationMs => _lastPacketDurationMs;
 
   /// Returns the native input buffer backed by native memory.
   ///
@@ -247,16 +250,7 @@ class BufferedOpusDecoder extends OpusDecoder {
   /// update the [inputBufferIndex] accordingly and call one of the decode methods.
   ///
   /// You must not put more bytes then [maxInputBufferSizeBytes] into this buffer.
-  Uint8List get inputBuffer =>
-      _inputBuffer.asTypedList(maxInputBufferSizeBytes);
-
-  /// The size of the allocated the output buffer. If this value is choosen
-  /// to small, this decoder will not be capable of decoding some packets.
-  ///
-  /// See the constructor for information, how to choose this.
-  final int maxOutputBufferSizeBytes;
-  int _outputBufferIndex;
-  final Pointer<Uint8> _outputBuffer;
+  Uint8List get inputBuffer => _inputBuffer.asTypedList(maxInputBufferSizeBytes);
 
   /// The portion of the allocated output buffer that is currently filled with data.
   /// The data are pcm samples, either encoded as s16le or floats, depending on
@@ -274,18 +268,16 @@ class BufferedOpusDecoder extends OpusDecoder {
   Float32List get outputBufferAsFloat32List =>
       _outputBuffer.cast<Float>().asTypedList(_outputBufferIndex ~/ 4);
 
-  final Pointer<Float> _softClipBuffer;
-
   BufferedOpusDecoder._(
-      this._opusDecoder,
-      this.sampleRate,
-      this.channels,
-      this._inputBuffer,
-      this.maxInputBufferSizeBytes,
-      this._outputBuffer,
-      this.maxOutputBufferSizeBytes,
-      this._softClipBuffer)
-      : _destroyed = false,
+    this._opusDecoder,
+    this.sampleRate,
+    this.channels,
+    this._inputBuffer,
+    this.maxInputBufferSizeBytes,
+    this._outputBuffer,
+    this.maxOutputBufferSizeBytes,
+    this._softClipBuffer,
+  )   : _destroyed = false,
         inputBufferIndex = 0,
         _outputBufferIndex = 0;
 
@@ -309,42 +301,37 @@ class BufferedOpusDecoder extends OpusDecoder {
   /// Also note that there is a [maxSamplesPerPacket] function.
   ///
   /// For the other parameters, see the matching fields for more information.
-  factory BufferedOpusDecoder(
-      {@required int sampleRate,
-      @required int channels,
-      int maxInputBufferSizeBytes,
-      int maxOutputBufferSizeBytes}) {
-    if (maxInputBufferSizeBytes == null) {
-      maxInputBufferSizeBytes = maxDataBytes;
-    }
-    if (maxOutputBufferSizeBytes == null) {
-      maxOutputBufferSizeBytes = maxSamplesPerPacket(sampleRate, channels);
-    }
-    Pointer<Int32> error = allocate<Int32>(count: 1);
-    Pointer<Uint8> input = allocate<Uint8>(count: maxInputBufferSizeBytes);
-    Pointer<Uint8> output = allocate<Uint8>(count: maxOutputBufferSizeBytes);
-    Pointer<Float> softClipBuffer = allocate<Float>(count: channels);
-    Pointer<opus_decoder.OpusDecoder> encoder =
-        opus_decoder.opus_decoder_create(sampleRate, channels, error);
+  factory BufferedOpusDecoder({
+    required int sampleRate,
+    required int channels,
+    int? maxInputBufferSizeBytes,
+    int? maxOutputBufferSizeBytes,
+  }) {
+    maxInputBufferSizeBytes ??= maxDataBytes;
+    maxOutputBufferSizeBytes ??= maxSamplesPerPacket(sampleRate, channels);
+    final error = malloc.allocate<Int32>(sizeOf<Int32>() * 1);
+    final input = malloc.allocate<Uint8>(sizeOf<Uint8>() * maxInputBufferSizeBytes);
+    final output = malloc.allocate<Uint8>(sizeOf<Uint8>() * maxOutputBufferSizeBytes);
+    final softClipBuffer = malloc.allocate<Float>(sizeOf<Float>() * channels);
+    final encoder = libopus.opus_decoder_create(sampleRate, channels, error);
     try {
-      if (error.value == opus_defines.OPUS_OK) {
+      if (error.value == opus_bindings.OPUS_OK) {
         return BufferedOpusDecoder._(
-            encoder,
-            sampleRate,
-            channels,
-            input,
-            maxInputBufferSizeBytes,
-            output,
-            maxOutputBufferSizeBytes,
-            softClipBuffer);
+          encoder,
+          sampleRate,
+          channels,
+          input,
+          maxInputBufferSizeBytes,
+          output,
+          maxOutputBufferSizeBytes,
+          softClipBuffer,
+        );
       } else {
-        free(input);
-        free(output);
-        free(softClipBuffer);
+        malloc..free(input)..free(output)..free(softClipBuffer);
         throw OpusException(error.value);
       }
     } finally {
-      free(error);
+      malloc.free(error);
     }
   }
 
@@ -374,22 +361,27 @@ class BufferedOpusDecoder extends OpusDecoder {
   ///
   /// The returned list is actually just the [outputBufferAsInt16List].
   @override
-  Int16List decode({bool fec = false, int loss}) {
+  Int16List decode({bool fec = false, int? loss}) {
     Pointer<Uint8> inputNative;
     int frameSize;
     if (inputBufferIndex > 0) {
       inputNative = _inputBuffer;
-      frameSize = maxOutputBufferSizeBytes ~/ (2 * channels);
+      frameSize = maxOutputBufferSizeBytes ~/ (channels * 2);
     } else {
       inputNative = nullptr;
       frameSize = loss ?? lastPacketDurationMs;
     }
-    int outputSamplesPerChannel = opus_decoder.opus_decode(_opusDecoder, inputNative,
-        inputBufferIndex, _outputBuffer.cast<Int16>(), frameSize, fec ? 1 : 0);
-    if (outputSamplesPerChannel >= opus_defines.OPUS_OK) {
-      _lastPacketDurationMs =
-          _packetDuration(outputSamplesPerChannel, channels, sampleRate);
-      _outputBufferIndex = 2 * outputSamplesPerChannel * channels;
+    final outputSamplesPerChannel = libopus.opus_decode(
+      _opusDecoder,
+      inputNative,
+      inputBufferIndex,
+      _outputBuffer.cast<Int16>(),
+      frameSize,
+      fec ? 1 : 0,
+    );
+    if (outputSamplesPerChannel >= opus_bindings.OPUS_OK) {
+      _lastPacketDurationMs = _packetDuration(outputSamplesPerChannel, channels, sampleRate);
+      _outputBufferIndex = outputSamplesPerChannel * channels * 2;
       return outputBufferAsInt16List;
     } else {
       throw OpusException(outputSamplesPerChannel);
@@ -404,33 +396,28 @@ class BufferedOpusDecoder extends OpusDecoder {
   ///
   /// Apart from that, this method behaves just as [decode], so see there for more information.
   @override
-  Float32List decodeFloat(
-      {bool autoSoftClip = false, bool fec = false, int loss}) {
+  Float32List decodeFloat({bool autoSoftClip = false, bool fec = false, int? loss}) {
     Pointer<Uint8> inputNative;
     int frameSize;
     if (inputBufferIndex > 0) {
       inputNative = _inputBuffer;
-      frameSize = maxOutputBufferSizeBytes ~/ (4 * channels);
+      frameSize = maxOutputBufferSizeBytes ~/ (channels * 4);
     } else {
       inputNative = nullptr;
       frameSize = loss ?? lastPacketDurationMs;
     }
-    int outputSamplesPerChannel = opus_decoder.opus_decode_float(
-        _opusDecoder,
-        inputNative,
-        inputBufferIndex,
-        _outputBuffer.cast<Float>(),
-        frameSize,
-        fec ? 1 : 0);
-    if (outputSamplesPerChannel >= opus_defines.OPUS_OK) {
-      _lastPacketDurationMs =
-          _packetDuration(outputSamplesPerChannel, channels, sampleRate);
-      _outputBufferIndex = 4 * outputSamplesPerChannel * channels;
-      if (autoSoftClip) {
-        return pcmSoftClipOutputBuffer();
-      } else {
-        return outputBufferAsFloat32List;
-      }
+    final outputSamplesPerChannel = libopus.opus_decode_float(
+      _opusDecoder,
+      inputNative,
+      inputBufferIndex,
+      _outputBuffer.cast<Float>(),
+      frameSize,
+      fec ? 1 : 0,
+    );
+    if (outputSamplesPerChannel >= opus_bindings.OPUS_OK) {
+      _lastPacketDurationMs = _packetDuration(outputSamplesPerChannel, channels, sampleRate);
+      _outputBufferIndex = outputSamplesPerChannel * channels * 4;
+      return autoSoftClip ? pcmSoftClipOutputBuffer() : outputBufferAsFloat32List;
     } else {
       throw OpusException(outputSamplesPerChannel);
     }
@@ -440,10 +427,8 @@ class BufferedOpusDecoder extends OpusDecoder {
   void destroy() {
     if (!_destroyed) {
       _destroyed = true;
-      opus_decoder.opus_decoder_destroy(_opusDecoder);
-      free(_inputBuffer);
-      free(_outputBuffer);
-      free(_softClipBuffer);
+      libopus.opus_decoder_destroy(_opusDecoder);
+      malloc..free(_inputBuffer)..free(_outputBuffer)..free(_softClipBuffer);
     }
   }
 
@@ -451,8 +436,12 @@ class BufferedOpusDecoder extends OpusDecoder {
   ///
   /// Behaves like the toplevel [pcmSoftClip] function, but without unnecessary copying.
   Float32List pcmSoftClipOutputBuffer() {
-    opus_decoder.opus_pcm_soft_clip(_outputBuffer.cast<Float>(),
-        _outputBufferIndex ~/ (4 * channels), channels, _softClipBuffer);
+    libopus.opus_pcm_soft_clip(
+      _outputBuffer.cast<Float>(),
+      _outputBufferIndex ~/ (channels * 4),
+      channels,
+      _softClipBuffer,
+    );
     return outputBufferAsFloat32List;
   }
 }

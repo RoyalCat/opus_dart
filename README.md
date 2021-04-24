@@ -59,7 +59,7 @@ so that the allocated native memory can be released. Otherwise, a memory leak ma
 ## Initialization
 <a name="init_bindings"></a>
 ### The Bindings
-Each generated library in /wrappers (except opus_defines.h) need to be initialized if used.
+Each generated library in /wrappers (except opus_bindings.h) need to be initialized if used.
 The generated libraries are intended to be used with a prefix, because they sometimes have
 functions with the same signature. For example, you would import them using
 ```

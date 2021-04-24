@@ -2,6 +2,7 @@
 /// Must be initalized using the [initOpus] function.
 library opus_dart;
 
+export 'src/bindings/libopus.dart';
 export 'src/opus_dart_decoder.dart';
 export 'src/opus_dart_encoder.dart';
 export 'src/opus_dart_misc.dart';
