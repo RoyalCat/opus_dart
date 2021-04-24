@@ -9,10 +9,9 @@ Wraps libopus in dart, and additionally provides a dart friendly API for encodin
     2.1 [The Bindings](#choosing_bindings)<br>
     2.2 [The Dart Friendly API](#choosing_firendly)<br>
 3. [Initialization](#init)<br>
-    3.1 [The Bindings](#init_bindings)<br>
-    3.2 [The Dart Friendly API](#init_friendly)<br>
-    3.3 [What is `lib`?](#init_lib)<br>
-    3.4 [Flutter](#init_flutter)<br>
+    3.1 [The Dart Friendly API](#init_friendly)<br>
+    3.2 [What is `lib`?](#init_lib)<br>
+    3.3 [Flutter](#init_flutter)<br>
 
 <a name="versioning"></a>
 ## Versioning
@@ -57,27 +56,12 @@ so that the allocated native memory can be released. Otherwise, a memory leak ma
 
 <a name="init"></a>
 ## Initialization
-<a name="init_bindings"></a>
-### The Bindings
-Each generated library in /wrappers (except opus_bindings.h) need to be initialized if used.
-The generated libraries are intended to be used with a prefix, because they sometimes have
-functions with the same signature. For example, you would import them using
-```
-import 'package:opus_dart/wrappers/opus_libinfo.dart' as opus_libinfo;
-import 'package:opus_dart/wrappers/opus_custom.dart' as opus_custom;
-```
-and then you can call in your main function
-```
-void main(){
-    opus_libinfo.init(lib);
-    opus_custom.init(lib);
-}
-```
 
 <a name="init_friendly"></a>
 ### The Dart Friendly API
 If using the dart firendly library opus_dart, you also have to initialize it using the toplevel `initOpus` function,
 but unlike the bindings, there is no need to import it with a prefix. This would look like:
+
 ```
 import 'package:opus_dart/opus_dart.dart';
 
@@ -93,6 +77,7 @@ void main(){
 As you may have noticed above, both, the Dart friendly API and the bindings need `lib` to initalize.
 `lib` is a [DynamicLibrary](https://api.dart.dev/stable/2.7.0/dart-ffi/DynamicLibrary-class.html) instance, pointing to libopus.
 On a dart:vm platform, you can dynamically load it:
+
 ```
 import 'dart:ffi';
 
@@ -106,7 +91,7 @@ void main() {
       lib = new DynamicLibrary.open('path/to/libopus_x86.dll');
     }
   } else if (Platform.isLinux) {
-    lib = new DynamicLibrary.open('/usr/local/lib/libopus.so');
+    lib = new DynamicLibrary.open('libopus.so');
   }
 }
 ```
