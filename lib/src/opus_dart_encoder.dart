@@ -12,13 +12,17 @@ import 'opus_dart_misc.dart';
 ///
 /// All method calls in this calls allocate their own memory everytime they are called.
 /// See the [BufferedOpusEncoder] for an implementation with less allocation calls.
-class SimpleOpusEncoder {
+class SimpleOpusEncoder extends OpusEncoder {
+  @override
   final int sampleRate;
+  @override
   final int channels;
+  @override
   final Application application;
 
   final Pointer<opus_bindings.OpusEncoder> _opusEncoder;
   bool _destroyed;
+  @override
   bool get destroyed => _destroyed;
 
   SimpleOpusEncoder._(this._opusEncoder, this.sampleRate, this.channels, this.application)
@@ -64,57 +68,68 @@ class SimpleOpusEncoder {
   /// The returnes list contains the bytes of the encoded opus packet.
   ///
   /// [input] and the returned list are copied to and respectively from native memory.
-  Uint8List encode({required Int16List input, int maxOutputSizeBytes = maxDataBytes}) {
-    final inputNative = malloc.allocate<Int16>(sizeOf<Int16>() * input.length);
-    inputNative.asTypedList(input.length).setAll(0, input);
-    final outputNative = malloc.allocate<Uint8>(sizeOf<Uint8>() * maxOutputSizeBytes);
-    final sampleCountPerChannel = input.length ~/ channels;
-    final outputLength = libopus.opus_encode(
-      _opusEncoder,
-      inputNative,
-      sampleCountPerChannel,
-      outputNative,
-      maxOutputSizeBytes,
-    );
-    try {
-      if (outputLength >= opus_bindings.OPUS_OK) {
-        final output = Uint8List.fromList(outputNative.asTypedList(outputLength));
-        return output;
-      } else {
-        throw OpusException(outputLength);
+  @override
+  Uint8List encode({Int16List? input, int maxOutputSizeBytes = maxDataBytes}) {
+    if (input != null) {
+      final inputNative = malloc.allocate<Int16>(sizeOf<Int16>() * input.length);
+      inputNative.asTypedList(input.length).setAll(0, input);
+      final outputNative = malloc.allocate<Uint8>(sizeOf<Uint8>() * maxOutputSizeBytes);
+      final sampleCountPerChannel = input.length ~/ channels;
+      final outputLength = libopus.opus_encode(
+        _opusEncoder,
+        inputNative,
+        sampleCountPerChannel,
+        outputNative,
+        maxOutputSizeBytes,
+      );
+      try {
+        if (outputLength >= opus_bindings.OPUS_OK) {
+          final output = Uint8List.fromList(outputNative.asTypedList(outputLength));
+          return output;
+        } else {
+          throw OpusException(outputLength);
+        }
+      } finally {
+        malloc..free(inputNative)..free(outputNative);
       }
-    } finally {
-      malloc..free(inputNative)..free(outputNative);
+    } else {
+      throw Exception('input must not be null');
     }
   }
 
   /// Encodes a frame of pcm data, stored as Float32List.
   ///
   /// This method behaves just as [encode], so see there for more information.
-  Uint8List encodeFloat({required Float32List input, int maxOutputSizeBytes = maxDataBytes}) {
-    final inputNative = malloc.allocate<Float>(sizeOf<Float>() * input.length);
-    inputNative.asTypedList(input.length).setAll(0, input);
-    final outputNative = malloc.allocate<Uint8>(sizeOf<Uint8>() * maxOutputSizeBytes);
-    final sampleCountPerChannel = input.length ~/ channels;
-    final outputLength = libopus.opus_encode_float(
-      _opusEncoder,
-      inputNative,
-      sampleCountPerChannel,
-      outputNative,
-      maxOutputSizeBytes,
-    );
-    try {
-      if (outputLength >= opus_bindings.OPUS_OK) {
-        final output = Uint8List.fromList(outputNative.asTypedList(outputLength));
-        return output;
-      } else {
-        throw OpusException(outputLength);
+  @override
+  Uint8List encodeFloat({Float32List? input, int maxOutputSizeBytes = maxDataBytes}) {
+    if (input != null) {
+      final inputNative = malloc.allocate<Float>(sizeOf<Float>() * input.length);
+      inputNative.asTypedList(input.length).setAll(0, input);
+      final outputNative = malloc.allocate<Uint8>(sizeOf<Uint8>() * maxOutputSizeBytes);
+      final sampleCountPerChannel = input.length ~/ channels;
+      final outputLength = libopus.opus_encode_float(
+        _opusEncoder,
+        inputNative,
+        sampleCountPerChannel,
+        outputNative,
+        maxOutputSizeBytes,
+      );
+      try {
+        if (outputLength >= opus_bindings.OPUS_OK) {
+          final output = Uint8List.fromList(outputNative.asTypedList(outputLength));
+          return output;
+        } else {
+          throw OpusException(outputLength);
+        }
+      } finally {
+        malloc..free(inputNative)..free(outputNative);
       }
-    } finally {
-      malloc..free(inputNative)..free(outputNative);
+    } else {
+      throw Exception('input must not be null');
     }
   }
 
+  @override
   void destroy() {
     if (!_destroyed) {
       _destroyed = true;

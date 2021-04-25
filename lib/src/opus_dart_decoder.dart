@@ -36,11 +36,13 @@ Float32List pcmSoftClip({required Float32List input, required int channels}) {
 ///
 /// All method calls in this calls allocate their own memory everytime they are called.
 /// See the [BufferedOpusDecoder] for an implementation with less allocation calls.
-class SimpleOpusDecoder {
+class SimpleOpusDecoder extends OpusDecoder {
+  @override
   final int sampleRate;
+  @override
   final int channels;
 
-  int? _lastPacketDurationMs;
+  int _lastPacketDurationMs = 0;
 
   final Pointer<Float> _softClipBuffer;
 
@@ -48,8 +50,10 @@ class SimpleOpusDecoder {
   final Pointer<opus_bindings.OpusDecoder> _opusDecoder;
   bool _destroyed;
 
+  @override
   bool get destroyed => _destroyed;
-  int? get lastPacketDurationMs => _lastPacketDurationMs;
+  @override
+  int get lastPacketDurationMs => _lastPacketDurationMs;
 
   SimpleOpusDecoder._(this._opusDecoder, this.sampleRate, this.channels, this._softClipBuffer)
       : _destroyed = false,
@@ -94,31 +98,36 @@ class SimpleOpusDecoder {
   /// really lost. So for them, you have to report packet loss.
   ///
   /// The input bytes need to represent a whole packet!
-  Int16List decode({required Uint8List input, bool fec = false, int? loss}) {
-    final outputNative = malloc.allocate<Int16>(sizeOf<Int16>() * _maxSamplesPerPacket);
-    Pointer<Uint8> inputNative;
-    inputNative = malloc.allocate<Uint8>(sizeOf<Uint8>() * input.length);
-    inputNative.asTypedList(input.length).setAll(0, input);
+  @override
+  Int16List decode({Uint8List? input, bool fec = false, int? loss}) {
+    if (input != null) {
+      final outputNative = malloc.allocate<Int16>(sizeOf<Int16>() * _maxSamplesPerPacket);
+      Pointer<Uint8> inputNative;
+      inputNative = malloc.allocate<Uint8>(sizeOf<Uint8>() * input.length);
+      inputNative.asTypedList(input.length).setAll(0, input);
 
-    int frameSize;
-    frameSize = (fec ? loss ?? lastPacketDurationMs : _maxSamplesPerPacket)!;
-    final outputSamplesPerChannel = libopus.opus_decode(
-      _opusDecoder,
-      inputNative,
-      input.length,
-      outputNative,
-      frameSize,
-      fec ? 1 : 0,
-    );
-    try {
-      if (outputSamplesPerChannel >= opus_bindings.OPUS_OK) {
-        _lastPacketDurationMs = _packetDuration(outputSamplesPerChannel, channels, sampleRate);
-        return Int16List.fromList(outputNative.asTypedList(outputSamplesPerChannel * channels));
-      } else {
-        throw OpusException(outputSamplesPerChannel);
+      int frameSize;
+      frameSize = fec ? loss ?? lastPacketDurationMs : _maxSamplesPerPacket;
+      final outputSamplesPerChannel = libopus.opus_decode(
+        _opusDecoder,
+        inputNative,
+        input.length,
+        outputNative,
+        frameSize,
+        fec ? 1 : 0,
+      );
+      try {
+        if (outputSamplesPerChannel >= opus_bindings.OPUS_OK) {
+          _lastPacketDurationMs = _packetDuration(outputSamplesPerChannel, channels, sampleRate);
+          return Int16List.fromList(outputNative.asTypedList(outputSamplesPerChannel * channels));
+        } else {
+          throw OpusException(outputSamplesPerChannel);
+        }
+      } finally {
+        malloc..free(inputNative)..free(outputNative);
       }
-    } finally {
-      malloc..free(inputNative)..free(outputNative);
+    } else {
+      throw Exception('input must not be null');
     }
   }
 
@@ -131,48 +140,54 @@ class SimpleOpusDecoder {
   /// because they already are in the native buffer.
   ///
   /// Apart from that, this method behaves just as [decode], so see there for more information.
+  @override
   Float32List decodeFloat({
-    required Uint8List input,
+    Uint8List? input,
     bool fec = false,
     bool autoSoftClip = false,
     int? loss,
   }) {
-    final outputNative = malloc.allocate<Float>(sizeOf<Float>() * _maxSamplesPerPacket);
-    Pointer<Uint8> inputNative;
+    if (input != null) {
+      final outputNative = malloc.allocate<Float>(sizeOf<Float>() * _maxSamplesPerPacket);
+      Pointer<Uint8> inputNative;
 
-    inputNative = malloc.allocate<Uint8>(sizeOf<Uint8>() * input.length);
-    inputNative.asTypedList(input.length).setAll(0, input);
+      inputNative = malloc.allocate<Uint8>(sizeOf<Uint8>() * input.length);
+      inputNative.asTypedList(input.length).setAll(0, input);
 
-    int frameSize;
-    frameSize = (fec ? loss ?? lastPacketDurationMs : _maxSamplesPerPacket)!;
-    final outputSamplesPerChannel = libopus.opus_decode_float(
-      _opusDecoder,
-      inputNative,
-      input.length,
-      outputNative,
-      frameSize,
-      fec ? 1 : 0,
-    );
-    try {
-      if (outputSamplesPerChannel >= opus_bindings.OPUS_OK) {
-        _lastPacketDurationMs = _packetDuration(outputSamplesPerChannel, channels, sampleRate);
-        if (autoSoftClip) {
-          libopus.opus_pcm_soft_clip(
-            outputNative,
-            outputSamplesPerChannel ~/ channels,
-            channels,
-            _softClipBuffer,
-          );
+      int frameSize;
+      frameSize = fec ? loss ?? lastPacketDurationMs : _maxSamplesPerPacket;
+      final outputSamplesPerChannel = libopus.opus_decode_float(
+        _opusDecoder,
+        inputNative,
+        input.length,
+        outputNative,
+        frameSize,
+        fec ? 1 : 0,
+      );
+      try {
+        if (outputSamplesPerChannel >= opus_bindings.OPUS_OK) {
+          _lastPacketDurationMs = _packetDuration(outputSamplesPerChannel, channels, sampleRate);
+          if (autoSoftClip) {
+            libopus.opus_pcm_soft_clip(
+              outputNative,
+              outputSamplesPerChannel ~/ channels,
+              channels,
+              _softClipBuffer,
+            );
+          }
+          return Float32List.fromList(outputNative.asTypedList(outputSamplesPerChannel * channels));
+        } else {
+          throw OpusException(outputSamplesPerChannel);
         }
-        return Float32List.fromList(outputNative.asTypedList(outputSamplesPerChannel * channels));
-      } else {
-        throw OpusException(outputSamplesPerChannel);
+      } finally {
+        malloc..free(inputNative)..free(outputNative);
       }
-    } finally {
-      malloc..free(inputNative)..free(outputNative);
+    } else {
+      throw Exception('input must not be null');
     }
   }
 
+  @override
   void destroy() {
     if (!_destroyed) {
       _destroyed = true;
